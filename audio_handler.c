@@ -56,7 +56,7 @@ int AudioResampling(AVCodecContext * audio_dec_ctx,
     return resampled_data_size;
 }
 
-int audio_decode_frame(VideoState *is, uint8_t *audio_buf, int buf_size)
+int audio_decode_frame(VideoState *is, uint8_t *audio_buf, int buf_size,double *pts_ptr)
 {
     AVCodecContext *aCodecCtx = is->audio_st->codec;
     static AVPacket pkt;
@@ -65,6 +65,7 @@ int audio_decode_frame(VideoState *is, uint8_t *audio_buf, int buf_size)
     static AVFrame frame;
 
     int len1, data_size = 0;
+    double pts;
 
     for(;;) {
         while(audio_pkt_size > 0) {
@@ -82,6 +83,11 @@ int audio_decode_frame(VideoState *is, uint8_t *audio_buf, int buf_size)
             if(data_size <= 0) {
                 continue;
             }
+            pts = is->audio_clock;
+            *pts_ptr = pts;
+            int n = 2 * is->audio_st->codec->channels;
+            is->audio_clock += (double)data_size /
+                (double)(n * is->audio_st->codec->sample_rate);
             /* We have data, return it and come back for more later */
             return data_size;
         }
@@ -97,6 +103,10 @@ int audio_decode_frame(VideoState *is, uint8_t *audio_buf, int buf_size)
         }
         audio_pkt_data = pkt.data;
         audio_pkt_size = pkt.size;
+
+        if(pkt.pts != AV_NOPTS_VALUE){
+            is->audio_clock = av_q2d(is->audio_st->time_base)*pkt.pts;
+        }
     }
 }
 
@@ -109,10 +119,11 @@ void audio_callback(void *userdata, Uint8 *stream, int len)
     static unsigned int audio_buf_size = 0;
     static unsigned int audio_buf_index = 0;
 
+    double pts;
     while(len > 0) {
         if(audio_buf_index >= audio_buf_size) {
             /* We have already sent all our data; get more */
-            audio_size = audio_decode_frame(is, audio_buf, audio_buf_size);
+            audio_size = audio_decode_frame(is, audio_buf, audio_buf_size,&pts);
             if(audio_size < 0) {
                 /* If error, output silence */
                 audio_buf_size = 1024; // arbitrary?

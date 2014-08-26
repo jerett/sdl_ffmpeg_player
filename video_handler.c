@@ -2,7 +2,21 @@
 #include "videoState.h"
 #include <libavformat/avformat.h>
 
-int queue_picture(VideoState *is, AVFrame *pFrame)
+double synchronize_video(VideoState *is, AVFrame *src_frame, double pts) {
+    double frame_delay;
+    if(pts != 0) {
+        is->video_clock = pts;
+    } else {
+        pts = is->video_clock;
+    }
+    frame_delay = av_q2d(is->video_st->codec->time_base);
+    frame_delay += src_frame->repeat_pict * (frame_delay * 0.5);
+    is->video_clock += frame_delay;
+    return pts;
+}
+
+extern uint64_t global_video_pkt_pts;
+int queue_picture(VideoState *is, AVFrame *pFrame,double pts)
 {
     VideoPicture *vp;
     AVPicture pict;
@@ -46,7 +60,7 @@ int queue_picture(VideoState *is, AVFrame *pFrame)
     /* We have a place to put our picture on the queue */
 
     if(vp->bmp) {
-
+        vp->pts = pts;
         SDL_LockYUVOverlay(vp->bmp);
 
         /* point pict at the queue */
@@ -91,19 +105,30 @@ int video_thread(void *arg)
     AVFrame *pFrame;
 
     pFrame = av_frame_alloc();
-
+    double pts;
     for(;;) {
         if(packet_queue_get(&is->videoq, packet, 1) < 0) {
             // means we quit getting packets
             break;
         }
+        pts = 0;
+        global_video_pkt_pts = packet->pts;
         // Decode video frame
         avcodec_decode_video2(is->video_st->codec, pFrame, &frameFinished,
                 packet);
-
+        if(packet->dts == AV_NOPTS_VALUE
+                && pFrame->opaque && *(uint64_t*)pFrame->opaque != (uint64_t)AV_NOPTS_VALUE) {
+            pts = *(uint64_t *)pFrame->opaque;
+        } else if(packet->dts != AV_NOPTS_VALUE) {
+            pts = packet->dts;
+        } else {
+            pts = 0;
+        }
+        pts *= av_q2d(is->video_st->time_base);
         // Did we get a video frame?
         if(frameFinished) {
-            if(queue_picture(is, pFrame) < 0) {
+            synchronize_video(is,pFrame,pts);
+            if(queue_picture(is, pFrame,pts) < 0) {
                 break;
             }
         }

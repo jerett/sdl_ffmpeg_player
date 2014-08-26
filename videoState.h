@@ -39,8 +39,13 @@ typedef struct VideoState {
 
   AVIOContext     *io_context;
   struct SwsContext *sws_ctx;
-} VideoState;
 
+  double video_clock;
+  double audio_clock;
+  double frame_last_delay;
+  double frame_last_pts;
+  double frame_timer;
+} VideoState;
 
 
 #endif

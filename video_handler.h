@@ -7,6 +7,7 @@ typedef struct VideoPicture {
   SDL_Overlay *bmp;
   int width, height; /* source height & width */
   int allocated;
+  double pts;
 } VideoPicture;
 
 int video_thread(void *arg);

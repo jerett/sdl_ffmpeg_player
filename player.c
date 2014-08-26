@@ -3,7 +3,7 @@
 #include <libavformat/avformat.h>
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
-
+#include <libavutil/time.h>
 #include <SDL/SDL.h>
 #include <SDL/SDL_thread.h>
 #include <stdio.h>
@@ -14,10 +14,21 @@
 #include "video_handler.h"
 #include "videoState.h"
 
+#define AV_SYNC_THRESHOLD 0.01
+#define AV_NOSYNC_THRESHOLD 10.0
 /* PacketQueue audioq; */
 /* int quit = 0; */
 SDL_Surface     *screen;
 VideoState *global_video_state;
+
+uint64_t global_video_pkt_pts = AV_NOPTS_VALUE;
+int our_get_buffer(struct AVCodecContext *c, AVFrame *pic,int flag) {
+    int ret = avcodec_default_get_buffer2(c, pic,flag);
+    uint64_t *pts = (uint64_t*)av_malloc(sizeof(uint64_t));
+    *pts = global_video_pkt_pts;
+    pic->opaque = pts;
+    return ret;
+}
 
 int stream_component_open(VideoState *is, int stream_index)
 {
@@ -85,6 +96,7 @@ int stream_component_open(VideoState *is, int stream_index)
                  NULL,
                  NULL
                 );
+            codecCtx->get_buffer2 = our_get_buffer;
             break;
         default:
             break;
@@ -184,6 +196,22 @@ fail:
     return 0;
 }
 
+double get_audio_clock(VideoState *is) {
+    double pts;
+    int hw_buf_size, bytes_per_sec, n;
+    pts = is->audio_clock;
+    hw_buf_size = is->audio_buf_size - is->audio_buf_index;
+    bytes_per_sec = 0;
+    n = is->audio_st->codec->channels * 2;
+    if(is->audio_st) {
+        bytes_per_sec = is->audio_st->codec->sample_rate * n;
+    }
+    if(bytes_per_sec) {
+        pts -= (double)hw_buf_size / bytes_per_sec;
+    }
+    return pts;
+}
+
 void video_display(VideoState *is)
 {
   SDL_Rect rect;
@@ -259,26 +287,50 @@ static Uint32 sdl_refresh_timer_cb(Uint32 interval, void *opaque)
 static void schedule_refresh(VideoState *is, int delay) {
   SDL_AddTimer(delay, sdl_refresh_timer_cb, is);
 }
-void video_refresh_timer(void *userdata)
-{
+
+void video_refresh_timer(void *userdata) {
+
   VideoState *is = (VideoState *)userdata;
-  // vp is used in later tutorials for synchronization
-  //VideoPicture *vp;
+  VideoPicture *vp;
+  double actual_delay, delay, sync_threshold, ref_clock, diff;
 
   if(is->video_st) {
     if(is->pictq_size == 0) {
       schedule_refresh(is, 1);
     } else {
-      //vp = &is->pictq[is->pictq_rindex];
-      /* Now, normally here goes a ton of code
-	 about timing, etc. we're just going to
-	 guess at a delay for now. You can
-	 increase and decrease this value and hard code
-	 the timing - but I don't suggest that ;)
-	 We'll learn how to do it for real later.
-      */
-      schedule_refresh(is, 80);
+      vp = &is->pictq[is->pictq_rindex];
 
+      delay = vp->pts - is->frame_last_pts; /* the pts from last time */
+      if(delay <= 0 || delay >= 1.0) {
+	/* if incorrect delay, use previous one */
+	delay = is->frame_last_delay;
+      }
+      /* save for next time */
+      is->frame_last_delay = delay;
+      is->frame_last_pts = vp->pts;
+
+      /* update delay to sync to audio */
+      ref_clock = get_audio_clock(is);
+      diff = vp->pts - ref_clock;
+
+      /* Skip or repeat the frame. Take delay into account
+	 FFPlay still doesn't "know if this is the best guess." */
+      sync_threshold = (delay > AV_SYNC_THRESHOLD) ? delay : AV_SYNC_THRESHOLD;
+      if(fabs(diff) < AV_NOSYNC_THRESHOLD) {
+	if(diff <= -sync_threshold) {
+	  delay = 0;
+	} else if(diff >= sync_threshold) {
+	  delay = 2 * delay;
+	}
+      }
+      is->frame_timer += delay;
+      /* computer the REAL delay */
+      actual_delay = is->frame_timer - (av_gettime() / 1000000.0);
+      if(actual_delay < 0.010) {
+	/* Really it should skip the picture instead */
+	actual_delay = 0.010;
+      }
+      schedule_refresh(is, (int)(actual_delay * 1000 + 0.5));
       /* show the picture! */
       video_display(is);
 
