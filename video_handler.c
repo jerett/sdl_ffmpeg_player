@@ -23,6 +23,7 @@ int queue_picture(VideoState *is, AVFrame *pFrame,double pts)
 
     /* wait until we have space for a new pic */
     SDL_LockMutex(is->pictq_mutex);
+    //最大显示缓存队列已蛮，等待信号
     while(is->pictq_size >= VIDEO_PICTURE_QUEUE_SIZE &&
             !is->quit) {
         SDL_CondWait(is->pictq_cond, is->pictq_mutex);
@@ -116,14 +117,17 @@ int video_thread(void *arg)
         // Decode video frame
         avcodec_decode_video2(is->video_st->codec, pFrame, &frameFinished,
                 packet);
-        if(packet->dts == AV_NOPTS_VALUE
-                && pFrame->opaque && *(uint64_t*)pFrame->opaque != (uint64_t)AV_NOPTS_VALUE) {
-            pts = *(uint64_t *)pFrame->opaque;
-        } else if(packet->dts != AV_NOPTS_VALUE) {
+        /* if(packet->dts == AV_NOPTS_VALUE */
+        /*         && pFrame->opaque && *(uint64_t*)pFrame->opaque != (uint64_t)AV_NOPTS_VALUE) { */
+        /*     pts = *(uint64_t *)pFrame->opaque; */
+        /* } else if(packet->dts != AV_NOPTS_VALUE) { */
+        /*     pts = packet->dts; */
+        /* } else { */
+        /*     pts = 0; */
+        /* } */
+        if(packet->dts !=AV_NOPTS_VALUE)
             pts = packet->dts;
-        } else {
-            pts = 0;
-        }
+        //转化pts以秒显示
         pts *= av_q2d(is->video_st->time_base);
         // Did we get a video frame?
         if(frameFinished) {

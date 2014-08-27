@@ -1,7 +1,6 @@
 #include <libavformat/avformat.h>
 #include <libswresample/swresample.h>
 #include "audio_handler.h"
-#include "videoState.h"
 #include "packet_queue.h"
 #include "constant.h"
 
@@ -76,7 +75,7 @@ int audio_decode_frame(VideoState *is, uint8_t *audio_buf, int buf_size,double *
                 audio_pkt_size = 0;
                 break;
             }
-            data_size = AudioResampling(aCodecCtx,&frame, AV_SAMPLE_FMT_S16, 2, 44100, audio_buf);
+            data_size = AudioResampling(aCodecCtx,&frame, AV_SAMPLE_FMT_S16,aCodecCtx->channels, 44100, audio_buf);
             audio_pkt_data += len1;
             audio_pkt_size -= len1;
 
@@ -143,3 +142,19 @@ void audio_callback(void *userdata, Uint8 *stream, int len)
     }
 }
 
+double get_audio_clock(VideoState *is) {
+    double pts;
+    int hw_buf_size, bytes_per_sec, n;
+    pts = is->audio_clock;
+    hw_buf_size = is->audio_buf_size - is->audio_buf_index;
+    bytes_per_sec = 0;
+    n = is->audio_st->codec->channels * 2;
+    if(is->audio_st) {
+        //最大显示缓存队列已蛮，等待信号
+        bytes_per_sec = is->audio_st->codec->sample_rate * n;
+    }
+    if(bytes_per_sec) {
+        pts -= (double)hw_buf_size / bytes_per_sec;
+    }
+    return pts;
+}

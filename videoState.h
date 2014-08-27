@@ -28,6 +28,7 @@ typedef struct VideoState {
 
   VideoPicture    pictq[VIDEO_PICTURE_QUEUE_SIZE];
   int             pictq_size, pictq_rindex, pictq_windex;
+  //picture原子保护
   SDL_mutex       *pictq_mutex;
   SDL_cond        *pictq_cond;
 

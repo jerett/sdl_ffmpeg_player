@@ -16,19 +16,18 @@
 
 #define AV_SYNC_THRESHOLD 0.01
 #define AV_NOSYNC_THRESHOLD 10.0
-/* PacketQueue audioq; */
-/* int quit = 0; */
+
 SDL_Surface     *screen;
 VideoState *global_video_state;
 
 uint64_t global_video_pkt_pts = AV_NOPTS_VALUE;
-int our_get_buffer(struct AVCodecContext *c, AVFrame *pic,int flag) {
-    int ret = avcodec_default_get_buffer2(c, pic,flag);
-    uint64_t *pts = (uint64_t*)av_malloc(sizeof(uint64_t));
-    *pts = global_video_pkt_pts;
-    pic->opaque = pts;
-    return ret;
-}
+/* int our_get_buffer(struct AVCodecContext *c, AVFrame *pic,int flag) { */
+/*     int ret = avcodec_default_get_buffer2(c, pic,flag); */
+/*     uint64_t *pts = (uint64_t*)av_malloc(sizeof(uint64_t)); */
+/*     *pts = global_video_pkt_pts; */
+/*     pic->opaque = pts; */
+/*     return ret; */
+/* } */
 
 int stream_component_open(VideoState *is, int stream_index)
 {
@@ -64,7 +63,9 @@ int stream_component_open(VideoState *is, int stream_index)
     if(!codec || (avcodec_open2(codecCtx, codec, &optionsDict) < 0)) {
         fprintf(stderr, "Unsupported codec!\n");
         return -1;
-    }
+    };
+    wanted_spec.callback = audio_callback;
+
 
     switch(codecCtx->codec_type) {
         case AVMEDIA_TYPE_AUDIO:
@@ -78,6 +79,7 @@ int stream_component_open(VideoState *is, int stream_index)
             break;
         case AVMEDIA_TYPE_VIDEO:
             is->videoStream = stream_index;
+            is->frame_timer = (double)av_gettime() / 1000000.0;
             is->video_st = pFormatCtx->streams[stream_index];
 
             packet_queue_init(&is->videoq);
@@ -92,11 +94,11 @@ int stream_component_open(VideoState *is, int stream_index)
                  is->video_st->codec->height,
                  PIX_FMT_YUV420P,
                  SWS_BILINEAR,
-                 NULL,
-                 NULL,
-                 NULL
+                 0,
+                 0,
+                 0
                 );
-            codecCtx->get_buffer2 = our_get_buffer;
+            /* codecCtx->get_buffer2 = our_get_buffer; */
             break;
         default:
             break;
@@ -196,156 +198,149 @@ fail:
     return 0;
 }
 
-double get_audio_clock(VideoState *is) {
-    double pts;
-    int hw_buf_size, bytes_per_sec, n;
-    pts = is->audio_clock;
-    hw_buf_size = is->audio_buf_size - is->audio_buf_index;
-    bytes_per_sec = 0;
-    n = is->audio_st->codec->channels * 2;
-    if(is->audio_st) {
-        bytes_per_sec = is->audio_st->codec->sample_rate * n;
-    }
-    if(bytes_per_sec) {
-        pts -= (double)hw_buf_size / bytes_per_sec;
-    }
-    return pts;
-}
 
 void video_display(VideoState *is)
 {
-  SDL_Rect rect;
-  VideoPicture *vp;
-  //AVPicture pict;
-  float aspect_ratio;
-  int w, h, x, y;
-  //int i;
+    SDL_Rect rect;
+    VideoPicture *vp;
+    //AVPicture pict;
+    float aspect_ratio;
+    int w, h, x, y;
+    //int i;
 
-  vp = &is->pictq[is->pictq_rindex];
-  if(vp->bmp) {
-    if(is->video_st->codec->sample_aspect_ratio.num == 0) {
-      aspect_ratio = 0;
-    } else {
-      aspect_ratio = av_q2d(is->video_st->codec->sample_aspect_ratio) *
-	is->video_st->codec->width / is->video_st->codec->height;
-    }
-    if(aspect_ratio <= 0.0) {
-      aspect_ratio = (float)is->video_st->codec->width /
-	(float)is->video_st->codec->height;
-    }
-    h = screen->h;
-    w = ((int)rint(h * aspect_ratio)) & -3;
-    if(w > screen->w) {
-      w = screen->w;
-      h = ((int)rint(w / aspect_ratio)) & -3;
-    }
-    x = (screen->w - w) / 2;
-    y = (screen->h - h) / 2;
+    vp = &is->pictq[is->pictq_rindex];
+    if(vp->bmp) {
+        if(is->video_st->codec->sample_aspect_ratio.num == 0) {
+            aspect_ratio = 0;
+        } else {
+            aspect_ratio = av_q2d(is->video_st->codec->sample_aspect_ratio) *
+                is->video_st->codec->width / is->video_st->codec->height;
+        }
+        if(aspect_ratio <= 0.0) {
+            aspect_ratio = (float)is->video_st->codec->width /
+                (float)is->video_st->codec->height;
+        }
+        h = screen->h;
+        w = ((int)rint(h * aspect_ratio)) & -3;
+        if(w > screen->w) {
+            w = screen->w;
+            h = ((int)rint(w / aspect_ratio)) & -3;
+        }
+        x = (screen->w - w) / 2;
+        y = (screen->h - h) / 2;
 
-    rect.x = x;
-    rect.y = y;
-    rect.w = w;
-    rect.h = h;
-    SDL_DisplayYUVOverlay(vp->bmp, &rect);
-  }
+        rect.x = x;
+        rect.y = y;
+        rect.w = w;
+        rect.h = h;
+        SDL_DisplayYUVOverlay(vp->bmp, &rect);
+    }
 }
 
 void alloc_picture(void *userdata)
 {
-  VideoState *is = (VideoState *)userdata;
-  VideoPicture *vp;
+    VideoState *is = (VideoState *)userdata;
+    VideoPicture *vp;
 
-  vp = &is->pictq[is->pictq_windex];
-  if(vp->bmp) {
-    // we already have one make another, bigger/smaller
-    SDL_FreeYUVOverlay(vp->bmp);
-  }
-  // Allocate a place to put our YUV image on that screen
-  vp->bmp = SDL_CreateYUVOverlay(is->video_st->codec->width,
-				 is->video_st->codec->height,
-				 SDL_YV12_OVERLAY,
-				 screen);
-  vp->width = is->video_st->codec->width;
-  vp->height = is->video_st->codec->height;
+    vp = &is->pictq[is->pictq_windex];
+    if(vp->bmp) {
+        // we already have one make another, bigger/smaller
+        SDL_FreeYUVOverlay(vp->bmp);
+    }
+    // Allocate a place to put our YUV image on that screen
+    vp->bmp = SDL_CreateYUVOverlay(is->video_st->codec->width,
+            is->video_st->codec->height,
+            SDL_YV12_OVERLAY,
+            screen);
+    vp->width = is->video_st->codec->width;
+    vp->height = is->video_st->codec->height;
 
-  SDL_LockMutex(is->pictq_mutex);
-  vp->allocated = 1;
-  SDL_CondSignal(is->pictq_cond);
-  SDL_UnlockMutex(is->pictq_mutex);
+    SDL_LockMutex(is->pictq_mutex);
+    vp->allocated = 1;
+    SDL_CondSignal(is->pictq_cond);
+    SDL_UnlockMutex(is->pictq_mutex);
 }
 
 static Uint32 sdl_refresh_timer_cb(Uint32 interval, void *opaque)
 {
-  SDL_Event event;
-  event.type = FF_REFRESH_EVENT;
-  event.user.data1 = opaque;
-  SDL_PushEvent(&event);
-  return 0; /* 0 means stop timer */
+    SDL_Event event;
+    event.type = FF_REFRESH_EVENT;
+    event.user.data1 = opaque;
+    SDL_PushEvent(&event);
+    return 0; /* 0 means stop timer */
 }
 
 /* schedule a video refresh in 'delay' ms */
 static void schedule_refresh(VideoState *is, int delay) {
-  SDL_AddTimer(delay, sdl_refresh_timer_cb, is);
+    SDL_AddTimer(delay, sdl_refresh_timer_cb, is);
 }
 
 void video_refresh_timer(void *userdata) {
 
-  VideoState *is = (VideoState *)userdata;
-  VideoPicture *vp;
-  double actual_delay, delay, sync_threshold, ref_clock, diff;
+    VideoState *is = (VideoState *)userdata;
+    VideoPicture *vp;
+    double actual_delay, delay, sync_threshold, ref_clock, diff;
 
-  if(is->video_st) {
-    if(is->pictq_size == 0) {
-      schedule_refresh(is, 1);
+    if(is->video_st) {
+        if(is->pictq_size == 0) {
+            schedule_refresh(is, 1);
+        } else {
+
+            /* printf("vidoe clock %f  audio clock %f \n",is->video_clock,is->audio_clock); */
+            /* printf("audio clock %f",is->audio_clock); */
+
+            vp = &is->pictq[is->pictq_rindex];
+
+            delay = vp->pts - is->frame_last_pts; /* the pts from last time */
+            /* printf("delay %f ",delay); */
+            if(delay <= 0 || delay >= 1.0) {
+                /* if incorrect delay, use previous one */
+                delay = is->frame_last_delay;
+            }
+            /* save for next time */
+            is->frame_last_delay = delay;
+            is->frame_last_pts = vp->pts;
+
+            /* update delay to sync to audio */
+            ref_clock = get_audio_clock(is);
+            diff = vp->pts - ref_clock;
+            /* printf("diff %f \n",diff); */
+
+            /* Skip or repeat the frame. Take delay into account
+               FFPlay still doesn't "know if this is the best guess." */
+            sync_threshold = (delay > AV_SYNC_THRESHOLD) ? delay : AV_SYNC_THRESHOLD;
+            if(fabs(diff) < AV_NOSYNC_THRESHOLD) {
+                if(diff <= -sync_threshold) {
+                    delay = 0;
+                } else if(diff >= sync_threshold) {
+                    delay = 2 * delay;
+                }
+            }
+
+            is->frame_timer += delay;
+            /* computer the REAL delay */
+            actual_delay = is->frame_timer - (av_gettime() / 1000000.0);
+            /* printf("diff %f actual delay %f \n",diff,actual_delay); */
+            if(actual_delay < 0.010) {
+                /* Really it should skip the picture instead */
+                actual_delay = 0.010;
+            }
+            schedule_refresh(is, (int)(actual_delay * 1000 + 0.5));
+            /* show the picture! */
+            video_display(is);
+
+            /* update queue for next picture! */
+            if(++is->pictq_rindex == VIDEO_PICTURE_QUEUE_SIZE) {
+                is->pictq_rindex = 0;
+            }
+            SDL_LockMutex(is->pictq_mutex);
+            is->pictq_size--;
+            SDL_CondSignal(is->pictq_cond);
+            SDL_UnlockMutex(is->pictq_mutex);
+        }
     } else {
-      vp = &is->pictq[is->pictq_rindex];
-
-      delay = vp->pts - is->frame_last_pts; /* the pts from last time */
-      if(delay <= 0 || delay >= 1.0) {
-	/* if incorrect delay, use previous one */
-	delay = is->frame_last_delay;
-      }
-      /* save for next time */
-      is->frame_last_delay = delay;
-      is->frame_last_pts = vp->pts;
-
-      /* update delay to sync to audio */
-      ref_clock = get_audio_clock(is);
-      diff = vp->pts - ref_clock;
-
-      /* Skip or repeat the frame. Take delay into account
-	 FFPlay still doesn't "know if this is the best guess." */
-      sync_threshold = (delay > AV_SYNC_THRESHOLD) ? delay : AV_SYNC_THRESHOLD;
-      if(fabs(diff) < AV_NOSYNC_THRESHOLD) {
-	if(diff <= -sync_threshold) {
-	  delay = 0;
-	} else if(diff >= sync_threshold) {
-	  delay = 2 * delay;
-	}
-      }
-      is->frame_timer += delay;
-      /* computer the REAL delay */
-      actual_delay = is->frame_timer - (av_gettime() / 1000000.0);
-      if(actual_delay < 0.010) {
-	/* Really it should skip the picture instead */
-	actual_delay = 0.010;
-      }
-      schedule_refresh(is, (int)(actual_delay * 1000 + 0.5));
-      /* show the picture! */
-      video_display(is);
-
-      /* update queue for next picture! */
-      if(++is->pictq_rindex == VIDEO_PICTURE_QUEUE_SIZE) {
-	is->pictq_rindex = 0;
-      }
-      SDL_LockMutex(is->pictq_mutex);
-      is->pictq_size--;
-      SDL_CondSignal(is->pictq_cond);
-      SDL_UnlockMutex(is->pictq_mutex);
+        schedule_refresh(is, 100);
     }
-  } else {
-    schedule_refresh(is, 100);
-  }
 }
 
 int main(int argc, char *argv[])
